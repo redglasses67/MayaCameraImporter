@@ -1,0 +1,156 @@
+global proc kkCreateMayaCam4Unity()
+{
+	string $mainCamTrans;
+	string $mainCamShape;
+
+	// 選択しているものの中にカメラがあればそれをリネームして利用する
+	string $selectedArray[] = `ls -sl`;
+	if (`size($selectedArray)` > 0)
+	{
+		string $selected;
+		for ($selected in $selectedArray)
+		{
+			if (nodeType(`listRelatives -shapes $selected`) == "camera")
+			{
+				rename $selectedArray[0] "MainCam";
+				break;
+			}
+		}
+	}
+
+	// すでにメインカメラが存在するかチェックして、存在してない場合は作成
+	string $mainCamArray[] = `ls -type "transform" "MainCam"`;
+
+	if (`size($mainCamArray)` > 0)
+	{
+		$mainCamTrans = $mainCamArray[0];
+		string $mainCamShapeArray[] = `listRelatives -shapes $mainCamTrans`;
+		$mainCamShape = $mainCamShapeArray[0];
+	}
+	else
+	{
+		string $mainCam[] = `camera
+							-centerOfInterest 5
+							-focalLength 35
+							-lensSqueezeRatio 1
+							-cameraScale 1
+							-horizontalFilmAperture 0.425
+							-horizontalFilmOffset 0
+							-verticalFilmAperture 0.772
+							-verticalFilmOffset 0
+							-filmFit "vertical"
+							-overscan 1.3
+							-motionBlur 0
+							-shutterAngle 144
+							-nearClipPlane 0.1
+							-farClipPlane 100000.0
+							-orthographic false
+							-panZoomEnabled false
+							-displayFilmGate true`;
+
+		$mainCamTrans = `rename $mainCam[0] "MainCam"`;
+		$mainCamShape = "MainCamShape";
+
+		// カメラのZ値を移動させる
+		setAttr -lock false ($mainCamTrans + ".translateZ"); // 念の為強制ロック解除
+		setAttr ($mainCamTrans + ".translateZ") 260;
+	}
+
+	// Scaleのアトリビュートがロックされている場合があるので、強制ロック解除しておく
+	setAttr -lock false ($mainCamTrans + ".scaleX");
+	setAttr -lock false ($mainCamTrans + ".scaleY");
+	setAttr -lock false ($mainCamTrans + ".scaleZ");
+
+	// わかりやすくするためにカメラのサイズ大きくする
+	setAttr ($mainCamTrans + ".scale") -type "double3" 10.0 10.0 10.0;
+
+	// ChannelBoxにRotateAxisを表示させる
+	setAttr -channelBox true ($mainCamTrans + ".rotateAxisX");
+	setAttr -channelBox true ($mainCamTrans + ".rotateAxisY");
+	setAttr -channelBox true ($mainCamTrans + ".rotateAxisZ");
+
+	//=====================================================================
+	// エイム用キューブ
+	//=====================================================================
+
+	// すでにエイムのキューブが存在するかチェックして存在してたらパスする
+	string $aimArray[] = `ls -type "transform" "CameraAim"`;
+	string $aimTrans;
+	string $aimShape;
+
+	if (`size($aimArray)` > 0)
+	{
+		$aimTrans = $aimArray[0];
+		string $aimShapeArray[] = `listRelatives -shapes $aimTrans`;
+		$aimShape = $aimShapeArray[0];
+	}
+	else
+	{
+		string $aimObj[] = `polyCube -height 100 -width 100 -depth 100`;
+
+		// Aimオブジェクトの表示をワイヤーフレームのみにするため
+		// 描画オーバーライドのシェーディングをOFFにする
+		$aimTrans = `rename $aimObj[0] "CameraAim"`;
+		$aimShape = "CameraAimShape";
+		
+		setAttr ($aimShape + ".overrideEnabled") 1; // オーバーライド有効化ON
+		setAttr ($aimShape + ".overrideShading") 0; // オーバーライドのシェーディングOFF
+
+		// メインカメラからエイム用のキューブに対してエイムコンストレイント
+		aimConstraint
+			-offset        0 -90 0
+			-aimVector     1   0 0
+			-upVector      0   1 0
+			-worldUpVector 0   1 0
+			$aimTrans      // target
+			$mainCamTrans; // source
+	}
+
+	//=====================================================================
+	// 書き出し用ロケーター
+	//=====================================================================
+
+	// すでに書き出し用ロケーターが存在するかチェックして存在してたら削除して作りなおす
+	string $locArray[] = `ls -type "transform" "locatorCamera"`;
+	if (`size($locArray)` > 0)
+	{
+		delete $locArray;
+	}
+
+	string $locObj[] = `spaceLocator -name "locatorCamera"`;
+
+	pointConstraint $mainCamTrans $locObj[0];
+
+	string $decompMtxArray[] = `ls "decomposeMatrixForCamRot"`;
+	string $decompMtx;
+	if (`size($decompMtxArray)` == 0)
+	{
+		$decompMtx = `createNode "decomposeMatrix" -name "decomposeMatrixForCamRot"`;
+	}
+	else
+	{
+		$decompMtx = $decompMtxArray[0];
+	}
+
+	// rotateAxis にも対応させるためにOrient Constraint（方向コンストレイント）ではなく、Matrixで接続する
+	connectAttr -force ($mainCamTrans + ".worldMatrix[0]") ($decompMtx + ".inputMatrix");
+	connectAttr -force ($decompMtx + ".outputRotate") ($locObj[0] + ".rotate");
+
+	// めんどくさいがmelだとstring（expression文）を指定するところで文字列結合できないみたいなので
+	// 事前に分かりやすいように分割して、それを結合しておく
+	string $expScaleX = "// locator's scaleX set nearClipPlane \n" +
+						$locObj[0] + ".scaleX = " + $mainCamShape + ".nearClipPlane; \n\n";
+	string $expScaleY = "// locator's scaleY set farClipPlane \n" +
+						$locObj[0] + ".scaleY = " + $mainCamShape + ".farClipPlane; \n\n";
+	string $expScaleZ = "// locator's scaleZ set FOV calculate from verticalFilmAperture and focalLength in camera \n" +
+						$locObj[0] + ".scaleZ = 2.0 * atan( (0.5 * " + $mainCamShape + ".verticalFilmAperture) / (" + $mainCamShape + ".focalLength * 0.03937) ) * 57.29578;";
+	string $expStr    = $expScaleX + $expScaleY + $expScaleZ;
+	
+	expression
+		-name "exp_MainCam"
+		-alwaysEvaluate 0
+		-string $expStr;
+
+	// 最後にロケーターを選択する
+	select -replace $locObj[0];
+}
