@@ -36,25 +36,6 @@ public class MayaCameraImporter : AssetPostprocessor
 	}
 
 
-	// static void OnPostprocessAllAssets(
-	// 	string[] importedAssets,
-	// 	string[] deletedAssets,
-	// 	string[] movedAssets,
-	// 	string[] movedFromAssetPaths)
-	// {
-	// 	foreach (var importedAsset in importedAssets)
-	// 	{
-	// 		var fileName = Path.GetFileNameWithoutExtension(importedAsset);
-	// 		Debug.Log("OnPostprocessAllAssets        fileName = " + fileName);
-	// 		if (fileName.StartsWith("mCam_") == false) { return; }
-
-	// 		var modelImporter = AssetImporter.GetAtPath(importedAsset) as ModelImporter;
-	// 		if (modelImporter == null) { return; }
-	// 		Debug.Log(importedAsset);
-	// 		ExtractCameraAnimClip(ref modelImporter, importedAsset);
-	// 	}
-	// }
-
 	/// <summary>
 	/// Mayaで制作したCameraのAnimationClipのコピーを取り出し,設定する
 	/// </summary>
@@ -74,15 +55,27 @@ public class MayaCameraImporter : AssetPostprocessor
 		if (clips == null || clips.Any() == false)
 		{
 			Debug.LogWarning("AnimationClipが取得できませんでした");
+			modelImporter.SaveAndReimport();
 			return;
 		}
+
+		var isResampleCurves = modelImporter.resampleCurves;
 
 		foreach (AnimationClip clip in clips)
 		{
 			var fileName = Path.GetFileNameWithoutExtension(assetPath);
 
-			var exportFullPath = exportPath + "/" + fileName + "_" + clip.name + ".anim";
+			string exportFullPath;
+			if (fileName.Contains(clip.name) == true)
+			{
+				exportFullPath = exportPath + "/" + fileName + ".anim";
+			}
+			else
+			{
+				exportFullPath = exportPath + "/" + fileName + "_" + clip.name + ".anim";
+			}
 			Debug.Log("exportFullPath = " + exportFullPath);
+
 			var clone = (AnimationClip)AssetDatabase.LoadAssetAtPath(exportFullPath, typeof(AnimationClip) );
 
 			// すでに存在した場合はカーブ情報を一旦削除しておく
@@ -122,14 +115,6 @@ public class MayaCameraImporter : AssetPostprocessor
 				var propName  = binding.propertyName;
 				var animCurve = AnimationUtility.GetEditorCurve(clip, binding);
 
-				// for (var i = 0; i < animCurve.keys.Length; i++)
-				// {
-				// 	AnimationUtility.SetKeyBroken(animCurve, i, true);
-				// 	// animCurve.keys[i].inTangent  = 0.5f;
-				// 	// animCurve.keys[i].outTangent = 0.5f;
-				// 	animCurve.keys[i].inTangent  = 0f;
-				// 	animCurve.keys[i].outTangent = 0f;
-				// }
 				// Scaleに格納してある Near・Far Clip Plane と FoV のアニメーションをCameraのプロパティに変換
 				// ※AnimatorがCameraと同じオブジェクトに付いている想定の設定なので、
 				//  そうでない場合はSetCurveの第一引数にAnimatorからCameraまでの相対パスを設定する必要があります。
@@ -174,24 +159,13 @@ public class MayaCameraImporter : AssetPostprocessor
 				}
 			}
 
-			AdjustMayaCameraRotation(ref clone);
+			AdjustMayaCameraRotation(ref clone, isResampleCurves);
 
-			// foreach (var newBinding in AnimationUtility.GetCurveBindings(clone))
-			// {
-			// 	var newAnimCurve = AnimationUtility.GetEditorCurve(clone, newBinding);
-			// 	for (var i = 0; i < newAnimCurve.keys.Length; i++)
-			// 	{
-			// 		// newAnimCurve.SmoothTangents(i, 0f);
-			// 		AnimationUtility.SetKeyBroken(newAnimCurve, i, true);
-			// 		// AnimationUtility.SetKeyBroken(newAnimCurve, i, false);
-			// 		AnimationUtility.SetKeyRightTangentMode(newAnimCurve, i, AnimationUtility.TangentMode.Linear);
-			// 		AnimationUtility.SetKeyLeftTangentMode(newAnimCurve, i, AnimationUtility.TangentMode.Linear);
-			// 		// AnimationUtility.SetKeyRightTangentMode(newAnimCurve, i, AnimationUtility.TangentMode.Free);
-			// 		// AnimationUtility.SetKeyLeftTangentMode(newAnimCurve, i, AnimationUtility.TangentMode.Free);
-			// 	}
-			// 	AnimationUtility.SetEditorCurve(clone, newBinding, newAnimCurve);
-			// }
-			SetAllKeyBothTangentLinear(ref clone);
+			// 圧縮がOFFの場合はTangentを変更しない。
+			if (modelImporter.animationCompression != ModelImporterAnimationCompression.Off)
+			{
+				SetAllKeyBothTangentLinear(ref clone);
+			}
 
 			//すでに同名ファイルが存在している場合一時ファイルとして作成してその情報をコピーする.
 			if (File.Exists(exportFullPath) == true)
@@ -214,7 +188,7 @@ public class MayaCameraImporter : AssetPostprocessor
 	/// MayaのカメラアニメーションをUnityに持ってきた場合にY軸180度回転しないと合わないので回転した状態にしておく
 	/// </summary>
 	/// <param name="clip"></param>/
-	private static void AdjustMayaCameraRotation(ref AnimationClip clip)
+	private static void AdjustMayaCameraRotation(ref AnimationClip clip, bool isResampleCurves)
 	{
 		var frameValDict = new Dictionary<float, float[]>();
 		var bindingArray = AnimationUtility.GetCurveBindings(clip);
@@ -223,8 +197,13 @@ public class MayaCameraImporter : AssetPostprocessor
 		foreach (var binding in bindingArray)
 		{
 			var propName = binding.propertyName;
+
 			// Rotation以外はパス
-			if (propName.Contains("m_LocalRotation") == false) { continue; }
+			if ((isResampleCurves == true && propName.Contains("m_LocalRotation") == false)
+			||  (isResampleCurves == false && propName.Contains("localEulerAnglesRaw") == false))
+			{
+				continue;
+			}
 
 			var curve = AnimationUtility.GetEditorCurve(clip, binding);
 
@@ -263,12 +242,28 @@ public class MayaCameraImporter : AssetPostprocessor
 		var newFrameValDict = new Dictionary<float, float[]>();
 		foreach (var frameVal in frameValDict)
 		{
-			var rotQua = new Quaternion(frameVal.Value[0], frameVal.Value[1], frameVal.Value[2], frameVal.Value[3]);
+			if (isResampleCurves == true)
+			{
+				var rotQua = new Quaternion(frameVal.Value[0], frameVal.Value[1], frameVal.Value[2], frameVal.Value[3]);
 
-			// Y軸を180度まわす
-			var newRotQua = rotQua * Quaternion.Euler(0f, 180f, 0f);
+				// Y軸を180度まわす
+				var newRotQua = rotQua * Quaternion.Euler(0f, 180f, 0f);
 
-			newFrameValDict[frameVal.Key] = new float[]{newRotQua.x, newRotQua.y, newRotQua.z, newRotQua.w};
+				newFrameValDict[frameVal.Key] = new float[]{newRotQua.x, newRotQua.y, newRotQua.z, newRotQua.w};
+			}
+			else
+			{
+				var rotEuler = new Vector3(frameVal.Value[0], frameVal.Value[1], frameVal.Value[2]);
+
+				// Y軸を180度まわす
+				var newRotEuler = rotEuler + new Vector3(0f, 180f, 0f);
+				if (newRotEuler.y >= 360)
+				{
+					newRotEuler.y -= 360;
+				}
+
+				newFrameValDict[frameVal.Key] = new float[]{newRotEuler.x, newRotEuler.y, newRotEuler.z, 0f};
+			}
 		}
 
 		// 再度curve bindingsをforeachで回して、回転済みの新しいRotation値をSetEditorCurveしていく
@@ -278,7 +273,15 @@ public class MayaCameraImporter : AssetPostprocessor
 
 			var curve = AnimationUtility.GetEditorCurve(clip, binding);
 
-			if (propName.Contains("m_LocalRotation") == true)
+			var isRotProp = false;
+			// Rotation以外はパス
+			if ((isResampleCurves == true && propName.Contains("m_LocalRotation") == true)
+			||  (isResampleCurves == false && propName.Contains("localEulerAnglesRaw") == true))
+			{
+				isRotProp = true;
+			}
+
+			if (isRotProp == true)
 			{
 				var animCurveLength  = curve.keys.Length;
 				var adaptingKeyArray = new Keyframe[animCurveLength];
@@ -310,6 +313,7 @@ public class MayaCameraImporter : AssetPostprocessor
 		}
 	}
 
+
 	private static void SetAllKeyBothTangentLinear(ref AnimationClip clip)
 	{
 		var so_clip = new SerializedObject(clip);
@@ -323,7 +327,9 @@ public class MayaCameraImporter : AssetPostprocessor
 			"m_ScaleCurves",
 			"m_FloatCurves" 
 		};
-
+		var sampleRate      = so_clip.FindProperty("m_SampleRate").floatValue;
+		var oneKeyframeTime = (float)((int)((1.0f / sampleRate) * 1000)) / 1000 + 0.001f;
+		Debug.Log("oneKeyframeTime = " + oneKeyframeTime);
 		foreach (var serializedCurveName in serializedCurveNameArray)
 		{
 			var sp_curveArray = so_clip.FindProperty(serializedCurveName);
@@ -334,11 +340,9 @@ public class MayaCameraImporter : AssetPostprocessor
 
 			for (var i = 0; i < sp_curveArrayLength; i++)
 			{
-				var sp_curveInfo = sp_curveArray.GetArrayElementAtIndex(i);
-				Debug.Log(serializedCurveName + " index : " + i);// + " attribute: " + sp_curveInfo.FindPropertyRelative("attribute").stringValue);
-
-				var sp_curve = sp_curveInfo.FindPropertyRelative("curve");
-				var sp_curveDataArray = sp_curve.FindPropertyRelative("m_Curve");
+				var sp_curveInfo            = sp_curveArray.GetArrayElementAtIndex(i);
+				var sp_curve                = sp_curveInfo.FindPropertyRelative("curve");
+				var sp_curveDataArray       = sp_curve.FindPropertyRelative("m_Curve");
 				var sp_curveDataArrayLength = sp_curveDataArray.arraySize;
 				if (sp_curveDataArrayLength == 0) { continue; }
 
@@ -355,7 +359,51 @@ public class MayaCameraImporter : AssetPostprocessor
 					var val2      = keyframe2.FindPropertyRelative("value");
 					var time2     = keyframe2.FindPropertyRelative("time");
 					var inSlope2  = keyframe2.FindPropertyRelative("inSlope");
+					// Debug.Log("time1 = " + time1.floatValue + " ( " + (time1.floatValue / oneKeyframeTime) + " )" +
+					// 	" , time2 = " + time2.floatValue + " ( " + (time2.floatValue / oneKeyframeTime) + " )");
 
+					var sp_attr = sp_curveInfo.FindPropertyRelative("attribute");
+					if (sp_attr != null)
+					{
+						Debug.Log("count = " + h + "  :  sp_attr = " + sp_attr.stringValue +
+							" : val1 = " + val1.floatValue + " , val2 = " + val2.floatValue);
+					}
+					else
+					{
+						Debug.Log("count = " + h + "  :  sp_attr = なし" +
+							" : val1 = " + val1.floatValue + " , val2 = " + val2.floatValue);
+					}
+
+					var outTangetDegree1_1 = Mathf.Rad2Deg * Mathf.Atan(outSlope1.floatValue * oneKeyframeTime);
+					var inTangetDegree2_1  = Mathf.Rad2Deg * Mathf.Atan(inSlope2.floatValue * oneKeyframeTime);
+					var AngleDiff_1       = Mathf.Abs(outTangetDegree1_1 - inTangetDegree2_1);
+					var outTangetDegree1_2 = Mathf.Rad2Deg * Mathf.Atan(outSlope1.floatValue);
+					var inTangetDegree2_2  = Mathf.Rad2Deg * Mathf.Atan(inSlope2.floatValue);
+					var AngleDiff_2       = Mathf.Abs(outTangetDegree1_2 - inTangetDegree2_2);
+					// Debug.Log("outTangetDegree1_1 = " + outTangetDegree1_1 +
+					// 	"  :  inTangetDegree2_1 = " + inTangetDegree2_1 +
+					// 	"  :  AngleDiff_1 = " + AngleDiff_1);
+					// Debug.Log("outTangetDegree1_2 = " + outTangetDegree1_2 +
+					// 	"  :  inTangetDegree2_2 = " + inTangetDegree2_2 +
+					// 	"  :  AngleDiff_2 = " + AngleDiff_2);
+					// Y軸（2点間のValue値の差）、X軸（2点間の時間の差）を元に角度を求める
+					var atan2 = Mathf.Rad2Deg * Mathf.Atan2(
+						val2.floatValue * oneKeyframeTime - val1.floatValue * oneKeyframeTime,
+						time2.floatValue * oneKeyframeTime - time1.floatValue * oneKeyframeTime);
+					var atan2_2 = Mathf.Rad2Deg * Mathf.Atan2(val2.floatValue - val1.floatValue, time2.floatValue - time1.floatValue);
+					Debug.Log("atan2 = " + atan2 + "  :  atan2_2 = " + atan2_2);
+					if (Mathf.Abs(atan2) > 80)
+					{
+						Debug.LogWarning("80度を超えてるよーーーー");
+					}
+					else
+					{
+						continue;
+					}
+					// var diff = val2.floatValue - val1.floatValue;
+					// Debug.Log("diff = " + diff);
+					
+					Debug.Log("");
 					switch (val1.propertyType)
 					{
 						case SerializedPropertyType.Float:
