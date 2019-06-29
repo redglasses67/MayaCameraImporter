@@ -110,11 +110,15 @@ public class MayaCameraImporter : AssetPostprocessor
 			}
 #endif
 
+			var propCurveDict = new Dictionary<string, AnimationCurve>();
+			var propCount = 0;
 			foreach (var binding in AnimationUtility.GetCurveBindings(clip))
 			{
 				var propName  = binding.propertyName;
 				var animCurve = AnimationUtility.GetEditorCurve(clip, binding);
-
+				Debug.Log("propName = " + propName);
+				propCurveDict[propName] = animCurve;
+				propCount++;
 				// Scaleに格納してある Near・Far Clip Plane と FoV のアニメーションをCameraのプロパティに変換
 				// ※AnimatorがCameraと同じオブジェクトに付いている想定の設定なので、
 				//  そうでない場合はSetCurveの第一引数にAnimatorからCameraまでの相対パスを設定する必要があります。
@@ -161,10 +165,11 @@ public class MayaCameraImporter : AssetPostprocessor
 
 			AdjustMayaCameraRotation(ref clone, isResampleCurves);
 
+			Debug.Log("propCurveDict Count = " + propCurveDict.Count + " : propCount = " + propCount);
 			// 圧縮がOFFの場合はTangentを変更しない。
 			if (modelImporter.animationCompression != ModelImporterAnimationCompression.Off)
 			{
-				SetAllKeyBothTangentLinear(ref clone);
+				SetAllKeyBothTangentLinear(ref clone, propCurveDict);
 			}
 
 			//すでに同名ファイルが存在している場合一時ファイルとして作成してその情報をコピーする.
@@ -314,7 +319,9 @@ public class MayaCameraImporter : AssetPostprocessor
 	}
 
 
-	private static void SetAllKeyBothTangentLinear(ref AnimationClip clip)
+	private static void SetAllKeyBothTangentLinear(
+		ref AnimationClip clip,
+		Dictionary<string, AnimationCurve> propCurveDict)
 	{
 		var so_clip = new SerializedObject(clip);
 
@@ -327,8 +334,9 @@ public class MayaCameraImporter : AssetPostprocessor
 			"m_ScaleCurves",
 			"m_FloatCurves" 
 		};
+
 		var sampleRate      = so_clip.FindProperty("m_SampleRate").floatValue;
-		var oneKeyframeTime = (float)((int)((1.0f / sampleRate) * 1000)) / 1000 + 0.001f;
+		var oneKeyframeTime = 1.0f / sampleRate;
 		Debug.Log("oneKeyframeTime = " + oneKeyframeTime);
 		foreach (var serializedCurveName in serializedCurveNameArray)
 		{
@@ -346,6 +354,9 @@ public class MayaCameraImporter : AssetPostprocessor
 				var sp_curveDataArrayLength = sp_curveDataArray.arraySize;
 				if (sp_curveDataArrayLength == 0) { continue; }
 
+				var sp_attr                 = sp_curveInfo.FindPropertyRelative("attribute");
+				var attr                    = (sp_attr != null) ? sp_attr.stringValue : "";
+
 				// 最後のkeyframeのoutslopeは不要なので, sp_curveDataArrayLength - 1
 				for (var h = 0; h < sp_curveDataArrayLength - 1; h++)
 				{
@@ -360,60 +371,65 @@ public class MayaCameraImporter : AssetPostprocessor
 					var time2     = keyframe2.FindPropertyRelative("time");
 					var inSlope2  = keyframe2.FindPropertyRelative("inSlope");
 
-					var sp_attr = sp_curveInfo.FindPropertyRelative("attribute");
-					var attr    = (sp_attr != null) ? sp_attr.stringValue : "";
-					attr        += "  count = " + h;
-					
+					AnimationCurve animCurve;
+					propCurveDict.TryGetValue(attr, out animCurve);
+
+					var _attr = attr + "  count = " + h;
+
 					// Debug.Log("");
 					switch (val1.propertyType)
 					{
 						case SerializedPropertyType.Float:
 							IsLinearTargetTangent(
-								"Float - " + attr,
+								"Float - " + _attr,
 								val1.floatValue,
 								outSlope1.floatValue,
 								time1.floatValue,
 								val2.floatValue,
 								inSlope2.floatValue,
 								time2.floatValue,
-								oneKeyframeTime);
+								oneKeyframeTime,
+								animCurve);
 							var tan = CalculateLinearTangent(
 											val1.floatValue,
 											time1.floatValue,
 											val2.floatValue,
 											time2.floatValue);
-							outSlope1.floatValue = tan;
-							inSlope2.floatValue  = tan;
+							// outSlope1.floatValue = tan;
+							// inSlope2.floatValue  = tan;
 							break;
 
 						case SerializedPropertyType.Vector3:
 							IsLinearTargetTangent(
-								"Vector3 - X - " + attr,
+								"Vector3 - X - " + _attr,
 								val1.vector3Value.x,
 								outSlope1.vector3Value.x,
 								time1.floatValue,
 								val2.vector3Value.x,
 								inSlope2.vector3Value.x,
 								time2.floatValue,
-								oneKeyframeTime);
+								oneKeyframeTime,
+								animCurve);
 							IsLinearTargetTangent(
-								"Vector3 - Y - " + attr,
+								"Vector3 - Y - " + _attr,
 								val1.vector3Value.y,
 								outSlope1.vector3Value.y,
 								time1.floatValue,
 								val2.vector3Value.y,
 								inSlope2.vector3Value.y,
 								time2.floatValue,
-								oneKeyframeTime);
+								oneKeyframeTime,
+								animCurve);
 							IsLinearTargetTangent(
-								"Vector3 - Z - " + attr,
+								"Vector3 - Z - " + _attr,
 								val1.vector3Value.z,
 								outSlope1.vector3Value.z,
 								time1.floatValue,
 								val2.vector3Value.z,
 								inSlope2.vector3Value.z,
 								time2.floatValue,
-								oneKeyframeTime);
+								oneKeyframeTime,
+								animCurve);
 							var vec3TanX = CalculateLinearTangent(
 											val1.vector3Value.x,
 											time1.floatValue,
@@ -429,47 +445,51 @@ public class MayaCameraImporter : AssetPostprocessor
 											time1.floatValue,
 											val2.vector3Value.z,
 											time2.floatValue);
-							outSlope1.vector3Value = new Vector3(vec3TanX, vec3TanY, vec3TanZ);
-							inSlope2.vector3Value  = new Vector3(vec3TanX, vec3TanY, vec3TanZ);
+							// outSlope1.vector3Value = new Vector3(vec3TanX, vec3TanY, vec3TanZ);
+							// inSlope2.vector3Value  = new Vector3(vec3TanX, vec3TanY, vec3TanZ);
 							break;
 
 						case SerializedPropertyType.Vector4:
 							IsLinearTargetTangent(
-								"Vector4 - X - " + attr,
+								"Vector4 - X - " + _attr,
 								val1.vector4Value.x,
 								outSlope1.vector4Value.x,
 								time1.floatValue,
 								val2.vector4Value.x,
 								inSlope2.vector4Value.x,
 								time2.floatValue,
-								oneKeyframeTime);
+								oneKeyframeTime,
+								animCurve);
 							IsLinearTargetTangent(
-								"Vector4 - Y - " + attr,
+								"Vector4 - Y - " + _attr,
 								val1.vector4Value.y,
 								outSlope1.vector4Value.y,
 								time1.floatValue,
 								val2.vector4Value.y,
 								inSlope2.vector4Value.y,
 								time2.floatValue,
-								oneKeyframeTime);
+								oneKeyframeTime,
+								animCurve);
 							IsLinearTargetTangent(
-								"Vector4 - Z - " + attr,
+								"Vector4 - Z - " + _attr,
 								val1.vector4Value.z,
 								outSlope1.vector4Value.z,
 								time1.floatValue,
 								val2.vector4Value.z,
 								inSlope2.vector4Value.z,
 								time2.floatValue,
-								oneKeyframeTime);
+								oneKeyframeTime,
+								animCurve);
 							IsLinearTargetTangent(
-								"Vector4 - W - " + attr,
+								"Vector4 - W - " + _attr,
 								val1.vector4Value.w,
 								outSlope1.vector4Value.w,
 								time1.floatValue,
 								val2.vector4Value.w,
 								inSlope2.vector4Value.w,
 								time2.floatValue,
-								oneKeyframeTime);
+								oneKeyframeTime,
+								animCurve);
 							var vec4TanX = CalculateLinearTangent(
 											val1.vector4Value.x,
 											time1.floatValue,
@@ -490,47 +510,51 @@ public class MayaCameraImporter : AssetPostprocessor
 											time1.floatValue,
 											val2.vector4Value.w,
 											time2.floatValue);
-							outSlope1.vector4Value = new Vector4(vec4TanX, vec4TanY, vec4TanZ, vec4TanW);
-							inSlope2.vector4Value  = new Vector4(vec4TanX, vec4TanY, vec4TanZ, vec4TanW);
+							// outSlope1.vector4Value = new Vector4(vec4TanX, vec4TanY, vec4TanZ, vec4TanW);
+							// inSlope2.vector4Value  = new Vector4(vec4TanX, vec4TanY, vec4TanZ, vec4TanW);
 							break;
 
 						case SerializedPropertyType.Quaternion:
 							IsLinearTargetTangent(
-								"Quaternion - X - " + attr,
+								"Quaternion - X - " + _attr,
 								val1.quaternionValue.x,
 								outSlope1.quaternionValue.x,
 								time1.floatValue,
 								val2.quaternionValue.x,
 								inSlope2.quaternionValue.x,
 								time2.floatValue,
-								oneKeyframeTime);
+								oneKeyframeTime,
+								animCurve);
 							IsLinearTargetTangent(
-								"Quaternion - Y - " + attr,
+								"Quaternion - Y - " + _attr,
 								val1.quaternionValue.y,
 								outSlope1.quaternionValue.y,
 								time1.floatValue,
 								val2.quaternionValue.y,
 								inSlope2.quaternionValue.y,
 								time2.floatValue,
-								oneKeyframeTime);
+								oneKeyframeTime,
+								animCurve);
 							IsLinearTargetTangent(
-								"Quaternion - Z - " + attr,
+								"Quaternion - Z - " + _attr,
 								val1.quaternionValue.z,
 								outSlope1.quaternionValue.z,
 								time1.floatValue,
 								val2.quaternionValue.z,
 								inSlope2.quaternionValue.z,
 								time2.floatValue,
-								oneKeyframeTime);
+								oneKeyframeTime,
+								animCurve);
 							IsLinearTargetTangent(
-								"Quaternion - W - " + attr,
+								"Quaternion - W - " + _attr,
 								val1.quaternionValue.w,
 								outSlope1.quaternionValue.w,
 								time1.floatValue,
 								val2.quaternionValue.w,
 								inSlope2.quaternionValue.w,
 								time2.floatValue,
-								oneKeyframeTime);
+								oneKeyframeTime,
+								animCurve);
 							var qua4TanX = CalculateLinearTangent(
 											val1.quaternionValue.x,
 											time1.floatValue,
@@ -551,8 +575,8 @@ public class MayaCameraImporter : AssetPostprocessor
 											time1.floatValue,
 											val2.quaternionValue.w,
 											time2.floatValue);
-							outSlope1.quaternionValue = new Quaternion(qua4TanX, qua4TanY, qua4TanZ, qua4TanW);
-							inSlope2.quaternionValue  = new Quaternion(qua4TanX, qua4TanY, qua4TanZ, qua4TanW);
+							// outSlope1.quaternionValue = new Quaternion(qua4TanX, qua4TanY, qua4TanZ, qua4TanW);
+							// inSlope2.quaternionValue  = new Quaternion(qua4TanX, qua4TanY, qua4TanZ, qua4TanW);
 							break;
 					}
 				}
@@ -571,44 +595,40 @@ public class MayaCameraImporter : AssetPostprocessor
 		float val2,
 		float inSlope2,
 		float time2,
-		float oneKeyframeTime)
+		float oneKeyframeTime,
+		AnimationCurve animCurve)
 	{
-		if (txt.Contains("localEulerAnglesRaw") == false){ return false;}
+		// if (txt.Contains("localEulerAnglesRaw") == false){ return false;}
+		if (animCurve == null) { return false; }
 
-		var outTangetDegree1_1 = Mathf.Rad2Deg * Mathf.Atan(outSlope1 * oneKeyframeTime);
-		var inTangetDegree2_1  = Mathf.Rad2Deg * Mathf.Atan(inSlope2 * oneKeyframeTime);
-		var AngleDiff_1        = Mathf.Abs(outTangetDegree1_1 - inTangetDegree2_1);
-		var _time1             = time1 / oneKeyframeTime;
-		// var outTangetDegree1_2 = Mathf.Rad2Deg * Mathf.Atan(outSlope1);
-		// var inTangetDegree2_2  = Mathf.Rad2Deg * Mathf.Atan(inSlope2);
+		// inSlope2 *= -1;
+		// var outTangetDegree1_1 = Mathf.Rad2Deg * Mathf.Atan(outSlope1 * oneKeyframeTime);
+		// var inTangetDegree2_1  = Mathf.Rad2Deg * Mathf.Atan(inSlope2 * oneKeyframeTime);
+		// var AngleDiff_1        = Mathf.Abs(outTangetDegree1_1 - inTangetDegree2_1);
+		// var _time1             = time1 / oneKeyframeTime;
+		// var outTangetDegree1_2 = Mathf.Rad2Deg * outSlope1;
+		// var inTangetDegree2_2  = Mathf.Rad2Deg * inSlope2;
 		// var AngleDiff_2        = Mathf.Abs(outTangetDegree1_2 - inTangetDegree2_2);
-		var _time2             = time2 / oneKeyframeTime;
+		// var _time2             = time2 / oneKeyframeTime;
+		
 		Debug.Log("==================================================================================");
-		Debug.Log(txt + " : Time1 = " + _time1 + " ( " + time1 + " ) - Time2 = " + _time2 + " ( " + time2 + " )");
-		Debug.Log("outTangetDegree1_1 = " + outTangetDegree1_1 +
-			"  :  inTangetDegree2_1 = " + inTangetDegree2_1 +
-			"  :  AngleDiff_1 = " + AngleDiff_1);
-		Debug.Log("val1 = " + val1 + " , val2 = " + val2);
-		// Debug.Log("outTangetDegree1_2 = " + outTangetDegree1_2 +
-		// 	"  :  inTangetDegree2_2 = " + inTangetDegree2_2 +
-		// 	"  :  AngleDiff_2 = " + AngleDiff_2);
+		Debug.Log("animCurve = " + animCurve);
+		Debug.Log(txt + " : Time1 = " + time1 + " - Time2 = " + time2 + "");
 
-		// Y軸（2点間のValue値の差）、X軸（2点間の時間の差）を元に角度を求める
-		var atan2 = Mathf.Rad2Deg * Mathf.Atan2(
-			val2 * oneKeyframeTime - val1 * oneKeyframeTime,
-			time2 * oneKeyframeTime - time1 * oneKeyframeTime);
-		var atan2_2 = Mathf.Rad2Deg * Mathf.Atan2(val2 - val1, time2 - time1);
+		var p1 = Vector2(time1, val1);
+		var p2 = Vector2(time2, val2);
+		var timeDiff = (time2 - time1) * 0.1f;
 
-		// Debug.Log("atan2 = " + atan2 + "  :  atan2_2 = " + atan2_2);
-
-
-		var p0 = new Vector2(time1, val1);
-		var p3 = new Vector2(time2, val2);
-		var partTime = (float)((time2 - time1) * 0.1);
-		// Debug.Log();
-		for (var i = 1; i <= 10; i++)
+		var linearLength = Vector2.Distance(p1, p2);
+		var curveLength  = 0f;
+		for (var i = 0; i < 10; i++)
 		{
-			CalculateCurvePoint(p0, outTangetDegree1_1, p3, inTangetDegree2_1, 0.1f * i );
+			var tA = time1 + (timeDiff * i);
+			var tB = time1 + (timeDiff * (i + 1));
+			var valA = animCurve.Evaluate(tA);
+			var valB = animCurve.Evaluate(tB);
+			// 毎回重複する値をEvaluateで取得するより1回取得しておいてから、再度forしたほうがいいような・・・
+			Debug.Log("t = " + t + "  :  val = " + val);
 		}
 		// if (Mathf.Abs(atan2) > 80 && Mathf.Abs(atan2_2) > 80)
 		// {
@@ -621,46 +641,6 @@ public class MayaCameraImporter : AssetPostprocessor
 		// 	return true;
 		// }
 		return false;
-	}
-
-
-/*
-Flashゲーム講座＆ASサンプル集【角度の計算について】
-https://hakuhin.jp/as/rotation.html#ROTATION_01
-
-
-Flashゲーム講座＆ASサンプル集【曲線について】
-https://hakuhin.jp/as/curve.html#CURVE_02
-*/
-	private static void CalculateCurvePoint(Vector2 p0, float p0_deg, Vector2 p3, float p3_deg, float t)
-	{
-
-		var p1     = Vector2.zero;
-		var p2     = Vector2.zero;
-		var result = Vector2.zero;
-
-		p1.x = Mathf.Cos(p0_deg);
-		p1.y = Mathf.Sin(p0_deg);
-		p2.x = Mathf.Cos(p3_deg);
-		p2.y = Mathf.Sin(p3_deg);
-
-		var v = (1-t) * (1-t) * (1-t);
-		result.x += v * p0.x;  
-		result.y += v * p0.y;
-
-		v = 3 * t * (1-t) * (1-t);
-		result.x += v * p1.x;
-		result.y += v * p1.y;
-
-		v = 3 * t * t * (1-t);
-		result.x += v * p2.x;
-		result.y += v * p2.y;
-
-		v = t * t * t;
-		result.x += v * p3.x;
-		result.y += v * p3.y;
-
-		Debug.Log("result ( " + t + " )  : X = " + result.x + " , Y = " + result.y);
 	}
 
 	private static float CalculateLinearTangent(float val1, float time1, float val2, float time2)
